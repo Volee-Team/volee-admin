@@ -48,22 +48,12 @@ function table(rows, cols) {
 
 // ---------------------------------------------------------------- auth
 
+// Email + password only: the app's username sign-in function doesn't accept
+// calls from web pages, and admins all have an email on their account.
 async function signIn(login, password) {
-  if (login.includes("@")) {
-    const { error } = await sb.auth.signInWithPassword({ email: login, password });
-    if (error) throw new Error(error.message);
-    return;
-  }
-  // Usernames go through the app's sign-in function, which never reveals emails.
-  const r = await fetch(`${SUPABASE_URL}/functions/v1/sign-in`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", apikey: SUPABASE_KEY },
-    body: JSON.stringify({ username: login, password }),
-  });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok || !body.access_token) throw new Error(body.error || "Wrong username or password.");
-  const { error } = await sb.auth.setSession({ access_token: body.access_token, refresh_token: body.refresh_token });
-  if (error) throw new Error(error.message);
+  if (!login.includes("@")) throw new Error("Use the email address on your Volee account.");
+  const { error } = await sb.auth.signInWithPassword({ email: login, password });
+  if (error) throw new Error(error.message === "Invalid login credentials" ? "Wrong email or password." : error.message);
 }
 
 async function boot() {
