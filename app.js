@@ -21,6 +21,36 @@ function toast(msg, err = false) {
   toast.h = setTimeout(() => t.classList.add("hidden"), 3500);
 }
 
+// Confirmation box. Resolves false/null when cancelled; true, or the typed
+// text when `input` is set. `danger` paints the confirm button red.
+function ask({ title, body = "", confirm = "Confirm", danger = false, input = null }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "modal-wrap";
+    wrap.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+        <h3>${esc(title)}</h3>
+        ${body ? `<p>${body}</p>` : ""}
+        ${input !== null ? `<input class="modal-input" placeholder="${esc(input)}">` : ""}
+        <div class="row" style="justify-content:flex-end;margin-top:14px">
+          <button class="btn" data-x="no">Cancel</button>
+          <button class="${danger ? "btn danger strong" : "primary"}" data-x="yes">${esc(confirm)}</button>
+        </div></div>`;
+    document.body.appendChild(wrap);
+    const field = wrap.querySelector(".modal-input");
+    const done = (ok) => {
+      wrap.remove();
+      document.removeEventListener("keydown", key);
+      resolve(ok ? (input !== null ? field.value.trim() : true) : (input !== null ? null : false));
+    };
+    const key = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter" && e.target === field) done(true); };
+    document.addEventListener("keydown", key);
+    wrap.onclick = (e) => { if (e.target === wrap) done(false); };
+    wrap.querySelector('[data-x="no"]').onclick = () => done(false);
+    wrap.querySelector('[data-x="yes"]').onclick = () => done(true);
+    (field ?? wrap.querySelector('[data-x="yes"]')).focus();
+  });
+}
+
 async function rpc(fn, args) {
   const { data, error } = await sb.rpc(fn, args ?? {});
   if (error) throw new Error(error.message);
@@ -193,12 +223,14 @@ async function loadSeasons() {
   // singles
   el.querySelectorAll("[data-ssave]").forEach((b) => (b.onclick = () => act(async () => {
     const id = b.dataset.ssave;
+    const nm = el.querySelector(`[data-sname="${id}"]`).value, st = el.querySelector(`[data-sstart="${id}"]`).value, en = el.querySelector(`[data-send="${id}"]`).value;
+    if (!(await ask({ title: `Save ${nm}?`, body: `${esc(day(st))} → ${esc(day(en))}. The app's season label, "days left" and the junior-to-adult switch all follow these dates.`, confirm: "Save season" }))) return;
     await rpc("admin_save_singles_season", { p_id: id, p_name: el.querySelector(`[data-sname="${id}"]`).value,
       p_starts_on: el.querySelector(`[data-sstart="${id}"]`).value, p_ends_on: el.querySelector(`[data-send="${id}"]`).value });
     toast("Season saved");
   }, loadSeasons)));
   el.querySelectorAll("[data-sdel]").forEach((b) => (b.onclick = () => act(async () => {
-    if (!confirm("Delete this upcoming season?")) return;
+    if (!(await ask({ title: "Delete this upcoming season?", body: "It hasn't started, so nothing is lost.", confirm: "Delete", danger: true }))) return;
     await rpc("admin_delete_singles_season", { p_id: b.dataset.sdel });
     toast("Season deleted");
   }, loadSeasons)));
@@ -206,13 +238,17 @@ async function loadSeasons() {
     e.preventDefault();
     const f = new FormData(e.target);
     act(async () => {
+      if (!(await ask({ title: `Add ${f.get("name")}?`, body: `${esc(day(f.get("start")))} → ${esc(day(f.get("end")))}.`, confirm: "Add season" }))) return;
       await rpc("admin_save_singles_season", { p_id: null, p_name: f.get("name"), p_starts_on: f.get("start"), p_ends_on: f.get("end") });
       toast("Season added");
     }, loadSeasons);
   };
 
   // doubles
-  $("#run-tick").onclick = () => act(async () => toast("Tick ran: " + JSON.stringify(await rpc("admin_run_season_tick"))), loadSeasons);
+  $("#run-tick").onclick = () => act(async () => {
+    if (!(await ask({ title: "Run the daily tick now?", body: "Seasons that move by date go to today's stage, and any registration reminders that are due are sent to players.", confirm: "Run it" }))) return;
+    toast("Tick ran: " + JSON.stringify(await rpc("admin_run_season_tick")));
+  }, loadSeasons);
   const nf = $("#new-doubles");
   nf.starts.onchange = () => {
     const s = nf.starts.value; if (!s) return;
@@ -223,7 +259,7 @@ async function loadSeasons() {
     const f = new FormData(nf);
     const regions = String(f.get("regions")).split(",").map((x) => x.trim()).filter(Boolean);
     act(async () => {
-      if (!confirm(`Create "${f.get("name")}" for ${regions.join(", ")}?`)) return;
+      if (!(await ask({ title: `Create ${f.get("name")}?`, body: `Regions: ${esc(regions.join(", "))}. Registration opens ${esc(day(f.get("opens")))}; the season runs ${esc(day(f.get("starts")))} → ${esc(day(f.get("ends")))}.${f.get("managed") === "on" ? " Players get registration reminders once it opens." : ""}`, confirm: "Create season" }))) return;
       await rpc("admin_create_doubles_season", {
         p_name: f.get("name"), p_bracket: "adult", p_registration_opens_on: f.get("opens"),
         p_registration_closes_on: f.get("closes"), p_late_registration_ends_on: f.get("late"),
@@ -232,22 +268,25 @@ async function loadSeasons() {
     }, loadSeasons);
   };
   el.querySelectorAll("[data-state]").forEach((sel) => (sel.onchange = () => act(async () => {
-    if (!confirm(`Move this season to "${sel.value.replaceAll("_", " ")}"?`)) return;
+    if (!(await ask({ title: `Move this season to "${sel.value.replaceAll("_", " ")}"?`, body: "Players see the change straight away. Closing a season ends open challenges.", confirm: "Move it", danger: ["closed", "archived"].includes(sel.value) }))) return;
     await rpc("admin_set_season_state", { p_season: sel.dataset.state, p_state: sel.value });
     toast("Season moved to " + sel.value.replaceAll("_", " "));
   }, loadSeasons)));
   el.querySelectorAll("[data-managed]").forEach((cb) => (cb.onchange = () => act(async () => {
+    if (!(await ask({ title: cb.checked ? "Move this season by date automatically?" : "Stop moving this season automatically?",
+        body: cb.checked ? "The daily tick will move it through registration, active and closed on its dates, and send registration reminders." : "It will stay at its current stage until you move it.", confirm: "Yes" }))) return;
     await rpc("admin_set_season_managed", { p_season: cb.dataset.managed, p_managed: cb.checked });
     toast(cb.checked ? "Now moves by date automatically" : "Now only moves when you move it");
   }, loadSeasons)));
   el.querySelectorAll("[data-savedates]").forEach((b) => (b.onclick = () => act(async () => {
     const id = b.dataset.savedates, v = (k) => el.querySelector(`[data-d="${id}-${k}"]`).value;
+    if (!(await ask({ title: `Save ${v("name")}?`, body: `Registration ${esc(day(v("opens")))} → ${esc(day(v("closes")))} (late until ${esc(day(v("late")))}); season ${esc(day(v("starts")))} → ${esc(day(v("ends")))}.`, confirm: "Save season" }))) return;
     await rpc("admin_update_doubles_season", { p_id: id, p_name: v("name"), p_registration_opens_on: v("opens"),
       p_registration_closes_on: v("closes"), p_late_registration_ends_on: v("late"), p_starts_on: v("starts"), p_ends_on: v("ends") });
     toast("Season updated");
   }, loadSeasons)));
   el.querySelectorAll("[data-addladder]").forEach((b) => (b.onclick = () => act(async () => {
-    const region = prompt("Region for the new Men's and Women's ladders (e.g. Atlanta)");
+    const region = await ask({ title: "Add a region", body: "Creates Men's and Women's ladders there for this season.", input: "e.g. Atlanta", confirm: "Add region" });
     if (!region) return;
     await rpc("admin_add_ladder", { p_season: b.dataset.addladder, p_region: region });
     toast("Ladders added for " + region);
@@ -294,12 +333,13 @@ async function loadTeams(seasonId) {
       <td><select data-tstate="${t.id}" style="width:auto">${states.map((x) => `<option ${x === t.state ? "selected" : ""}>${x}</option>`).join("")}</select></td>
       <td><button class="btn" data-tsave="${t.id}">Save</button></td></tr>`).join("")}</table>` : `<p class="muted">No teams in this season.</p>`;
   box.querySelectorAll("[data-tsave]").forEach((b) => (b.onclick = () => act(async () => {
-    const id = b.dataset.tsave;
+    const id = b.dataset.tsave, st = box.querySelector(`[data-tstate="${id}"]`).value;
+    if (!(await ask({ title: "Save this team?", body: `Status: ${esc(st)}.${["withdrawn", "disqualified", "dissolved"].includes(st) ? " The team drops off the ladder." : ""}`, confirm: "Save team", danger: ["disqualified", "dissolved"].includes(st) }))) return;
     await rpc("admin_update_team", { p_id: id, p_name: box.querySelector(`[data-tname="${id}"]`).value, p_state: box.querySelector(`[data-tstate="${id}"]`).value });
     toast("Team saved");
   }, () => loadTeams(seasonId))));
   box.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => act(async () => {
-    if (!confirm(`Remove ${b.dataset.rmname} from this team? The roster lock doesn't apply to admins.`)) return;
+    if (!(await ask({ title: `Remove ${b.dataset.rmname} from this team?`, body: "Admins can do this even after rosters lock. A team left with fewer than two players can't play.", confirm: "Remove", danger: true }))) return;
     await rpc("admin_remove_team_member", { p_member: b.dataset.rm });
     toast("Removed");
   }, () => loadTeams(seasonId))));
@@ -391,22 +431,28 @@ async function loadPlayer(id) {
     };
     if (f.get("level_type") === "ntrp") { if (!f.get("ntrp")) return toast("Pick an NTRP level", true); patch.ntrp = Number(f.get("ntrp")); }
     else { if (!f.get("tier")) return toast("Pick a tier", true); patch.tier = Number(f.get("tier")); }
-    act(async () => { await rpc("admin_update_player", { p_id: id, p_patch: patch }); toast("Saved"); }, reload);
+    const changed = Object.entries(patch).filter(([k, v]) => String(v ?? "") !== String((k === "is_hidden" ? p.hidden : p[k]) ?? "")).map(([k, v]) => `${k.replaceAll("_", " ")}: ${v}`);
+    if (!changed.length) return toast("Nothing changed");
+    act(async () => {
+      if (!(await ask({ title: `Save changes to ${p.display_name}?`, body: changed.map(esc).join("<br>"), confirm: "Save changes" }))) return;
+      await rpc("admin_update_player", { p_id: id, p_patch: patch }); toast("Saved");
+    }, reload);
   };
   if ($("#suspend")) $("#suspend").onclick = () => act(async () => {
-    const reason = prompt(`Suspend ${p.display_name}? They'll be signed out, can't sign back in, and will be hidden. Reason (optional):`);
+    const reason = await ask({ title: `Suspend ${p.display_name}?`, body: "They're signed out everywhere, can't sign back in, and nobody can see them. You can lift it later.", input: "Reason (optional)", confirm: "Suspend", danger: true });
     if (reason === null) return;
     await rpc("admin_suspend_player", { p_id: id, p_reason: reason });
     toast("Suspended");
   }, reload);
   if ($("#unsuspend")) $("#unsuspend").onclick = () => act(async () => {
-    if (!confirm(`Lift ${p.display_name}'s suspension?`)) return;
+    if (!(await ask({ title: `Lift ${p.display_name}'s suspension?`, body: "They can sign in again and are visible as before.", confirm: "Lift suspension" }))) return;
     await rpc("admin_unsuspend_player", { p_id: id });
     toast("Suspension lifted");
   }, reload);
   $("#toggle-admin").onclick = () => act(async () => {
     const on = !flags.is_admin;
-    if (!confirm(on ? `Give ${p.display_name} full admin access?` : `Remove ${p.display_name}'s admin access?`)) return;
+    if (!(await ask({ title: on ? `Give ${p.display_name} full admin access?` : `Remove ${p.display_name}'s admin access?`,
+        body: on ? "They'll be able to do everything on this site: edit and suspend players, run seasons, and message everyone." : "They lose access to this site and the app's Admin screen.", confirm: on ? "Make admin" : "Remove admin", danger: true }))) return;
     await rpc("admin_set_admin", { p_id: id, p_on: on });
     toast(on ? "Admin access granted" : "Admin access removed");
   }, reload);
@@ -442,25 +488,24 @@ async function loadMatches() {
       <td>${when(r.scheduled_for)}</td><td>${esc(r.posted_by)}</td><td>${esc(r.location_name ?? r.city ?? "")}</td><td>${esc(r.state)}${r.is_mixed ? " · mixed" : ""}</td>
       <td>${r.state === "open" ? `<button class="btn danger" data-fcancel="${r.id}">Cancel</button>` : ""}</td></tr>`).join("")}</table>` : `<p class="muted">None.</p>`}</div>`;
 
-  const ask = (q) => { const r = prompt(q); return r === null ? null : r; };
   el.querySelectorAll("[data-accept]").forEach((b) => (b.onclick = () => act(async () => {
-    if (!confirm("Accept the reported score? Ratings and the ladder update as if both players confirmed.")) return;
+    if (!(await ask({ title: "Accept the reported score?", body: "Ratings and the ladder update as if both players had confirmed it.", confirm: "Accept score" }))) return;
     await rpc("admin_accept_proposed_score", { p_id: b.dataset.accept }); toast("Score accepted");
   }, loadMatches)));
   el.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = () => act(async () => {
-    const reason = ask("Cancel this challenge? Reason (optional):"); if (reason === null) return;
+    const reason = await ask({ title: "Cancel this challenge?", body: "Both players see it as cancelled.", input: "Reason (optional)", confirm: "Cancel challenge", danger: true }); if (reason === null) return;
     await rpc("admin_cancel_challenge", { p_id: b.dataset.cancel, p_reason: reason }); toast("Challenge cancelled");
   }, loadMatches)));
   el.querySelectorAll("[data-void]").forEach((b) => (b.onclick = () => act(async () => {
-    const reason = ask("Void this match? Reason (optional):"); if (reason === null) return;
+    const reason = await ask({ title: "Void this match?", body: "It comes off both players' records and the standings. Rating changes it caused stay.", input: "Reason (optional)", confirm: "Void match", danger: true }); if (reason === null) return;
     await rpc("admin_void_match", { p_id: b.dataset.void, p_reason: reason }); toast("Match voided");
   }, loadMatches)));
   el.querySelectorAll("[data-dvoid]").forEach((b) => (b.onclick = () => act(async () => {
-    const reason = ask("Void this doubles match? It comes off the standings. Reason (optional):"); if (reason === null) return;
+    const reason = await ask({ title: "Void this doubles match?", body: "It comes off the standings for both teams.", input: "Reason (optional)", confirm: "Void match", danger: true }); if (reason === null) return;
     await rpc("admin_void_doubles_match", { p_id: b.dataset.dvoid, p_reason: reason }); toast("Match voided");
   }, loadMatches)));
   el.querySelectorAll("[data-fcancel]").forEach((b) => (b.onclick = () => act(async () => {
-    if (!confirm("Cancel this Flex request?")) return;
+    if (!(await ask({ title: "Cancel this Flex request?", body: "Anyone who joined sees it as cancelled.", confirm: "Cancel request", danger: true }))) return;
     await rpc("admin_cancel_flex", { p_id: b.dataset.fcancel }); toast("Flex request cancelled");
   }, loadMatches)));
 }
@@ -508,7 +553,7 @@ async function loadAnnounce() {
     try {
       const n = await rpc("admin_announce", args(false));
       if (!n) return toast("Nobody matches that audience.", true);
-      if (!confirm(`Send "${f.title.value}" to ${n} people now? This can't be unsent.`)) return;
+      if (!(await ask({ title: `Send to ${n} people?`, body: `<b>${esc(f.title.value)}</b><br>${esc(f.body.value)}<br><br>It goes out as a push notification now and can't be unsent.`, confirm: `Send to ${n}`, danger: true }))) return;
       const sent = await rpc("admin_announce", args(true));
       toast(`Sent to ${sent} people`);
       f.reset(); sync(); $("#a-n").textContent = "";
@@ -545,7 +590,7 @@ async function loadSafety() {
     <h2>Kids turning 18 soon</h2><div class="card">${table(kids)}</div>
     <h2>Feedback</h2><div class="card">${table(feedback, ["player", "message", "app_version", "created_at"])}</div>`;
   el.querySelectorAll("[data-resolve]").forEach((b) => (b.onclick = async () => {
-    const note = prompt("Resolution note (optional)") ?? null;
+    const note = await ask({ title: "Resolve this report?", input: "Resolution note (optional)", confirm: "Resolve" });
     if (note === null) return;
     try { await rpc("admin_resolve_report", { p_id: b.dataset.resolve, p_note: note }); toast("Report resolved"); loadSafety(); }
     catch (e) { toast(e.message, true); }
@@ -578,10 +623,14 @@ async function loadSettings() {
     <h2>ML win-chance forecasts (shadow mode)</h2>
     <div class="card"><p class="muted small">Hidden from players. Scored on real adult singles matches as results come in; lower log loss is better, 0.693 is a coin flip.</p><pre>${esc(JSON.stringify(ml, null, 2))}</pre></div>`;
   $("#kid-alerts").onchange = async (e) => {
+    const on = e.target.checked;
+    if (!(await ask({ title: on ? "Turn on parent alerts?" : "Turn off parent alerts?",
+        body: on ? "Every morning, parents of family members about to turn 18 get a reminder to hand the account over." : "Parents stop getting the turning-18 reminder.", confirm: on ? "Turn on" : "Turn off" }))) { e.target.checked = !on; return; }
     try { await rpc("admin_set_setting", { p_key: "kid_age_alerts", p_value: e.target.checked ? "on" : "off" }); toast(e.target.checked ? "Parent alerts on" : "Parent alerts off"); }
     catch (err) { toast(err.message, true); e.target.checked = !e.target.checked; }
   };
   $("#save-url").onclick = async () => {
+    if (!(await ask({ title: "Save the App Store link?", body: `Invite texts will link to ${esc($("#store-url").value.trim())}.`, confirm: "Save link" }))) return;
     try { await rpc("admin_set_setting", { p_key: "app_store_url", p_value: $("#store-url").value.trim() }); toast("Saved"); }
     catch (err) { toast(err.message, true); }
   };
